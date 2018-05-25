@@ -34,3 +34,4 @@ sqlnet.log
 /.cache/
 *.sw[o,p]
 .cache
+.DS_Store

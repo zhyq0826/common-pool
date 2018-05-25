@@ -1,11 +1,152 @@
 from collections import deque
+import threading
+import time
+
+
+class Empty(Exception):
+    "Exception raised by Queue.get(block=0)/get_nowait()."
+
+    pass
+
+
+class Full(Exception):
+    "Exception raised by Queue.put(block=0)/put_nowait()."
+
+    pass
 
 
 class Queue(object):
 
     def __init__(self, maxsize=0):
-        self.maxsize = maxsize
+        """Initialize a queue object with a given maximum size.
+        If `maxsize` is <= 0, the queue size is infinite.
+        """
+        # mutex must be held whenever the queue is mutating.  All methods
+        # that acquire mutex must release it before returning.  mutex
+        # is shared between the two conditions, so acquiring and
+        # releasing the conditions also acquires and releases mutex.
         self._init(maxsize)
+        self.mutex = threading.RLock()
+        # Notify not_empty whenever an item is added to the queue; a
+        # thread waiting to get is notified then.
+        self.not_empty_c = threading.Condition(self.mutex)
+        # Notify not_full whenever an item is removed from the queue;
+        # a thread waiting to put is notified then.
+        self.not_full_c = threading.Condition(self.mutex)
+
+    def qsize(self):
+        """Return the approximate size of the queue (not reliable!)."""
+        self.mutex.acquire()
+        n = self._qsize()
+        self.mutex.release()
+        return n
+
+    def empty(self):
+        """Return True if the queue is empty, False otherwise (not
+        reliable!)."""
+
+        self.mutex.acquire()
+        n = self._empty()
+        self.mutex.release()
+        return n
+
+    def full(self):
+        """Return True if the queue is full, False otherwise (not
+        reliable!)."""
+
+        self.mutex.acquire()
+        n = self._full()
+        self.mutex.release()
+        return n
+
+    def put(self, item, block=True, timeout=None):
+        """Put an item into the queue.
+
+        If optional args `block` is True and `timeout` is None (the
+        default), block if necessary until a free slot is
+        available. If `timeout` is a positive number, it blocks at
+        most `timeout` seconds and raises the ``Full`` exception if no
+        free slot was available within that time.  Otherwise (`block`
+        is false), put an item on the queue if a free slot is
+        immediately available, else raise the ``Full`` exception
+        (`timeout` is ignored in that case).
+        """
+        self.not_full_c.acquire()
+        try:
+            if not block:
+                if self._full():
+                    raise Full()
+            elif timeout is None:
+                while self._full():
+                    # wait for remove action to notify
+                    self.not_full_c.wait()
+            else:
+                if timeout < 0:
+                    raise ValueError("'timeout' must be a positive number")
+                endtime = time.time() + timeout
+                while self._full():
+                    remaining = time.time() - endtime
+                    if remaining <= 0:
+                        raise Full()
+                    self.not_full_c.wait(remaining)
+            self._put(item)
+            # not empty condition notify to other thread to get
+            # By default,
+            # wake up one thread waiting on this condition, if any
+            self.not_empty_c.notify()
+        finally:
+            self.not_full_c.release()
+
+    def put_nowait(self, item):
+        """Put an item into the queue without blocking.
+
+        Only enqueue the item if a free slot is immediately available.
+        Otherwise raise the ``Full`` exception.
+        """
+        return self.put(item, False)
+
+    def get(self, block=True, timeout=None):
+        """Remove and return an item from the queue.
+
+        If optional args `block` is True and `timeout` is None (the
+        default), block if necessary until an item is available. If
+        `timeout` is a positive number, it blocks at most `timeout`
+        seconds and raises the ``Empty`` exception if no item was
+        available within that time.  Otherwise (`block` is false),
+        return an item if one is immediately available, else raise the
+        ``Empty`` exception (`timeout` is ignored in that case).
+        """
+        self.not_empty_c.acquire()
+        try:
+            if not block:
+                if self._empty():
+                    raise Empty()
+            elif timeout is None:
+                while self._empty():
+                    self.not_empty_c.wait()
+            else:
+                if timeout < 0:
+                    raise ValueError("'timeout' must be a positive number")
+                endtime = time.time() - timeout
+                while self._empty():
+                    remaining = time.time() - endtime
+                    if remaining <= 0:
+                        raise Empty()
+                    self.not_empty_c.wait(remaining)
+            item = self._get()
+            self.not_full_c.notify()
+            return item
+        finally:
+            self.not_empty_c.release()
+
+    def get_nowait(self):
+        """Remove and return an item from the queue without blocking.
+
+        Only get an item if one is immediately available. Otherwise
+        raise the ``Empty`` exception.
+        """
+
+        return self.get(False)
 
     # Initialize the queue representation
     def _init(self, maxsize):
@@ -30,3 +171,50 @@ class Queue(object):
     # Get an item from the queue
     def _get(self):
         return self.queue.popleft()
+
+
+class Pool(object):
+
+    def _creator(self, creator):
+        """Create connection from caller"""
+        pass
+
+    def recreate(self):
+        """Return a new :class:`.Pool`, of the same class as this one
+        and configured with identical creation arguments.
+
+        This method is used in conjunction with :meth:`dispose`
+        to close out an entire :class:`.Pool` and create a new one in
+        its place.
+
+        """
+        raise NotImplementedError()
+
+    def connect(self):
+        """Return a DBAPI connection from the pool.
+
+        The connection is instrumented such that when its
+        ``close()`` method is called, the connection will be returned to
+        the pool.
+
+        """
+        raise NotImplementedError()
+
+    def dispose(self):
+        """Dispose of this pool.
+        This method leaves the possibility of checked-out connections
+        remaining open, as it only affects connections that are
+        idle in the pool.
+
+        See also the :meth:`Pool.recreate` method.
+
+        """
+        raise NotImplementedError()
+
+    def status(self):
+        raise NotImplementedError()
+
+
+
+class QueuePool(Pool):
+    pass
