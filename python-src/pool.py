@@ -175,46 +175,65 @@ class Queue(object):
 
 class Pool(object):
 
-    def _creator(self, creator):
-        """Create connection from caller"""
-        pass
 
-    def recreate(self):
-        """Return a new :class:`.Pool`, of the same class as this one
-        and configured with identical creation arguments.
-
-        This method is used in conjunction with :meth:`dispose`
-        to close out an entire :class:`.Pool` and create a new one in
-        its place.
-
-        """
-        raise NotImplementedError()
+    def __init__(self, creator, timeout=30):
+        self.creator = creator
+        self._pool = Queue()
+        self._timeout = timeout
 
     def connect(self):
-        """Return a DBAPI connection from the pool.
-
-        The connection is instrumented such that when its
-        ``close()`` method is called, the connection will be returned to
-        the pool.
-
-        """
-        raise NotImplementedError()
-
-    def dispose(self):
-        """Dispose of this pool.
-        This method leaves the possibility of checked-out connections
-        remaining open, as it only affects connections that are
-        idle in the pool.
-
-        See also the :meth:`Pool.recreate` method.
-
-        """
-        raise NotImplementedError()
+        return _ConnectionProxy().factory(self)
 
     def status(self):
         raise NotImplementedError()
 
+    def _do_get(self):
+        try:
+            # no block get
+            return self._pool.get(False, self._timeout)
+        except Empty:
+            pass
+
+        return self._create_connection()
+
+    def _return_conn(self, proxy):
+        try:
+            self._pool.put(proxy, False)
+        except sqla_queue.Full:
+            try:
+                proxy.close()
+            finally:
+                self._dec_overflow()
+
+    def _create_connection(self):
+        return _ConnectionProxy(self)
 
 
-class QueuePool(Pool):
-    pass
+class _ConnectionProxy(object):
+
+    def __init__(self, pool):
+        self._pool = pool
+        self.connection = None
+    
+    @classmethod
+    def factory(cls, pool):
+        proxy = pool._do_get()
+        try:
+            connection = proxy.get_connection()
+        except Exception as err:
+            raise Exception("get connection failed")
+
+        return proxy
+
+    def get_connection(self):
+        if self.connection is None:
+            self.__connect()
+
+    def __connect(self):
+        try:
+            self.connection = self._pool.creator()
+        except Exception, e:
+            raise Exception("create connection failed")
+
+    def close(self):
+        self._pool._return_conn(self)
