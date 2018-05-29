@@ -176,7 +176,7 @@ class Queue(object):
 class Pool(object):
 
 
-    def __init__(self, creator, timeout=30):
+    def __init__(self, creator, pool_size=5, timeout=30):
         """
         :args creator caller class for connection
         :args timeout for pool get connection timeout
@@ -184,6 +184,9 @@ class Pool(object):
         self.creator = creator
         self._pool = Queue()
         self._timeout = timeout
+        # if pool size overflow
+        self._overflow = 0 - pool_size
+        self._overflow_lock = threading.Lock()
 
     def connect(self):
         """get a connection from pool
@@ -193,13 +196,17 @@ class Pool(object):
     def _get_conn(self):
         """internal get connection
         """
+        wait = self._overflow > 0
         try:
             # no block get
-            return self._pool.get(False, self._timeout)
+            return self._pool.get(wait, self._timeout)
         except Empty:
             pass
 
-        return _ConnectionProxy(self)
+        if self._inc_overflow():
+            return _ConnectionProxy(self)
+        else:
+            return self._get_conn()
 
     def _return_conn(self, proxy):
         """return connection to pool
@@ -212,6 +219,10 @@ class Pool(object):
                 proxy.close_connection()
             finally:
                 pass
+
+    def _inc_overflow(self):
+        with self._overflow_lock:
+            if self._overflow < self._max_over
 
 
 class _ConnectionProxy(object):
