@@ -177,36 +177,41 @@ class Pool(object):
 
 
     def __init__(self, creator, timeout=30):
+        """
+        :args creator caller class for connection
+        :args timeout for pool get connection timeout
+        """
         self.creator = creator
         self._pool = Queue()
         self._timeout = timeout
 
     def connect(self):
+        """get a connection from pool
+        """
         return _ConnectionProxy().factory(self)
 
-    def status(self):
-        raise NotImplementedError()
-
-    def _do_get(self):
+    def _get_conn(self):
+        """internal get connection
+        """
         try:
             # no block get
             return self._pool.get(False, self._timeout)
         except Empty:
             pass
 
-        return self._create_connection()
+        return _ConnectionProxy(self)
 
     def _return_conn(self, proxy):
+        """return connection to pool
+        """
         try:
             self._pool.put(proxy, False)
         except sqla_queue.Full:
             try:
-                proxy.close()
+                # free connection source
+                proxy.close_connection()
             finally:
-                self._dec_overflow()
-
-    def _create_connection(self):
-        return _ConnectionProxy(self)
+                pass
 
 
 class _ConnectionProxy(object):
@@ -217,7 +222,7 @@ class _ConnectionProxy(object):
     
     @classmethod
     def factory(cls, pool):
-        proxy = pool._do_get()
+        proxy = pool._get_conn()
         try:
             connection = proxy.get_connection()
         except Exception as err:
@@ -236,4 +241,9 @@ class _ConnectionProxy(object):
             raise Exception("create connection failed")
 
     def close(self):
+        """proxy close connection then return connecton to pool"""
         self._pool._return_conn(self)
+
+    def close_connection():
+        """thre real connection to close"""
+        self.collection.close()
