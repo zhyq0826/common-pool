@@ -176,16 +176,18 @@ class Queue(object):
 class Pool(object):
 
 
-    def __init__(self, creator, pool_size=5, timeout=30):
+    def __init__(self, creator, pool_size=5, timeout=30, max_overflow=10):
         """
         :args creator caller class for connection
         :args timeout for pool get connection timeout
+        :args max_overflow max allowd overflow
         """
         self.creator = creator
         self._pool = Queue()
         self._timeout = timeout
         # if pool size overflow
         self._overflow = 0 - pool_size
+        self._max_overflow = max_overflow
         self._overflow_lock = threading.Lock()
 
     def connect(self):
@@ -196,16 +198,27 @@ class Pool(object):
     def _get_conn(self):
         """internal get connection
         """
-        wait = self._overflow > 0
+        user_overflow = self._max_overflow > -1
         try:
+            wait = user_overflow and self._overflow > self._max_overflow
             # no block get
             return self._pool.get(wait, self._timeout)
         except Empty:
             pass
 
+        if user_overflow and self._overflow >= self._max_overflow:
+            if not wait:
+                return self._get_conn()
+            else:
+                raise Exception("overflow")
+
         if self._inc_overflow():
-            return _ConnectionProxy(self)
+            try:
+                return _ConnectionProxy(self)
+            except Exception, e:
+                self._dec_overflow()
         else:
+            # greater than max overflow
             return self._get_conn()
 
     def _return_conn(self, proxy):
@@ -221,8 +234,23 @@ class Pool(object):
                 pass
 
     def _inc_overflow(self):
+        if self._max_overflow == -1:
+            self._overflow += 1
+            return True
         with self._overflow_lock:
-            if self._overflow < self._max_over
+            if self._overflow < self._max_overflow:
+                self._overflow += 1
+                return True
+            else:
+                return False
+
+    def _dec_overflow(self):
+        if self._max_overflow == -1:
+            self._overflow -= 1
+            return True
+        with self._overflow_lock:
+            self._overflow -= 1
+            return True
 
 
 class _ConnectionProxy(object):
