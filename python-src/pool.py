@@ -175,38 +175,54 @@ class Queue(object):
 
 class Pool(object):
 
-
-    def __init__(self, creator, pool_size=5, timeout=30, max_overflow=10):
+    def __init__(
+            self,
+            creator,
+            pool_size=5,
+            timeout=10,
+            max_overflow=10,
+            recycle=-1,
+            ):
         """
-        :args creator caller class for connection
-        :args timeout for pool get connection timeout
-        :args max_overflow max allowd overflow
+        :args creator func caller class for connection
+        :args pool_size int
+        :args timeout int for pool get connection timeout
+        :args max_overflow int max allowd overflow
+        :args recycle
         """
         self.creator = creator
         self._pool = Queue()
+        # get connection timeout
         self._timeout = timeout
-        # if pool size overflow
+        # pool size overflow
         self._overflow = 0 - pool_size
+        # allow max overflow
         self._max_overflow = max_overflow
+        # how long to recycle pool connection
+        self._recycle = recycle
+        # overflow lock for threads racing modify
         self._overflow_lock = threading.Lock()
 
     def connect(self):
         """get a connection from pool
         """
-        return _ConnectionProxy().factory(self)
+        return _ConnectionProxy.factory(self)
 
     def _get_conn(self):
         """internal get connection
         """
-        user_overflow = self._max_overflow > -1
+        # check if allow overflow
+        use_overflow = self._max_overflow > -1
         try:
-            wait = user_overflow and self._overflow > self._max_overflow
+            # exceed overflow then just wait for timeout, then get no block
+            wait = use_overflow and self._overflow >= self._max_overflow
             # no block get
             return self._pool.get(wait, self._timeout)
         except Empty:
             pass
 
-        if user_overflow and self._overflow >= self._max_overflow:
+        # before  this check wait timeout
+        if use_overflow and self._overflow >= self._max_overflow:
             if not wait:
                 return self._get_conn()
             else:
@@ -215,7 +231,7 @@ class Pool(object):
         if self._inc_overflow():
             try:
                 return _ConnectionProxy(self)
-            except Exception, e:
+            except:
                 self._dec_overflow()
         else:
             # greater than max overflow
@@ -226,7 +242,7 @@ class Pool(object):
         """
         try:
             self._pool.put(proxy, False)
-        except sqla_queue.Full:
+        except Full:
             try:
                 # free connection source
                 proxy.close_connection()
@@ -258,31 +274,42 @@ class _ConnectionProxy(object):
     def __init__(self, pool):
         self._pool = pool
         self.connection = None
-    
+        self.starttime = time.time()
+
     @classmethod
     def factory(cls, pool):
         proxy = pool._get_conn()
         try:
             connection = proxy.get_connection()
-        except Exception as err:
+        except:
             raise Exception("get connection failed")
 
         return proxy
 
     def get_connection(self):
+        recycle = False
         if self.connection is None:
             self.__connect()
+        elif self._pool._recycle > -1 and \
+            time.time() - self.starttime > self._pool._recycle:
+            recycle = True
+        elif self._pool._invalidate_time > self.starttime:
+            recycle = True
+
+        if recycle:
+            self.close_connection()
+            self.__connect
 
     def __connect(self):
         try:
             self.connection = self._pool.creator()
-        except Exception, e:
+        except:
             raise Exception("create connection failed")
 
     def close(self):
         """proxy close connection then return connecton to pool"""
         self._pool._return_conn(self)
 
-    def close_connection():
+    def close_connection(self):
         """thre real connection to close"""
         self.collection.close()

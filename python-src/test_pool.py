@@ -88,4 +88,3 @@ def test_get_timeout():
     queue = pool.Queue()
     queue.put("a", timeout=2)
     assert queue.get(timeout=2) == "a", "value should be a"
-
